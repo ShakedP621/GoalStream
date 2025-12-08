@@ -1,0 +1,20 @@
+﻿# Build artifacts
+bin/
+obj/
+
+# VS settings + temp
+.vs/
+*.user
+*.suo
+
+# NuGet packages (if you ever use packages folder)
+packages/
+
+# Docker-related local overrides (keep base compose in repo)
+docker-compose.override.yml
+
+# Logs
+*.log
+
+# Rider / other IDEs (optional)
+.idea/

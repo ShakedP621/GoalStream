@@ -1,0 +1,55 @@
+﻿services:
+  # Postgres database for highlights-api 
+  postgres:
+    image: postgres:16-alpine
+    container_name: goalstream-postgres
+    environment:
+      - POSTGRES_USER=goalstream
+      - POSTGRES_PASSWORD=goalstreampwd
+      - POSTGRES_DB=goalstream
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Single Kafka broker using the official Apache Kafka image (KRaft mode).
+  kafka:
+    image: apache/kafka:4.1.1
+    container_name: goalstream-kafka
+    ports:
+      - "9092:9092"
+    # No extra env needed for a simple single-broker dev setup.
+    # Other containers will reach it via kafka:9092
+
+  # Events API – publishes match events to Kafka 
+  events-api:
+    build:
+      context: ./src/Events.Api
+      dockerfile: Dockerfile
+    container_name: goalstream-events-api
+    environment:
+      - ASPNETCORE_URLS=http://0.0.0.0:8080
+      - ASPNETCORE_ENVIRONMENT=Development
+    ports:
+      - "5001:8080"
+    depends_on:
+      - kafka
+      - postgres
+
+  # Highlights API – consumes from Kafka and uses Postgres 
+  highlights-api:
+    build:
+      context: ./src/Highlights.Api
+      dockerfile: Dockerfile
+    container_name: goalstream-highlights-api
+    environment:
+      - ASPNETCORE_URLS=http://0.0.0.0:8080
+      - ASPNETCORE_ENVIRONMENT=Development
+    ports:
+      - "5002:8080"
+    depends_on:
+      - kafka
+      - postgres
+
+volumes:
+  postgres_data:
