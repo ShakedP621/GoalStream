@@ -16,12 +16,15 @@ namespace Events.Api.Publishing
         private readonly KafkaSettings _settings;
         private readonly ILogger<KafkaMatchEventPublisher> _logger;
         private readonly IProducer<string, string> _producer;
+        private readonly JsonSerializerOptions _serializerOptions;
 
         public KafkaMatchEventPublisher(
             IOptions<KafkaSettings> kafkaOptions,
+            JsonSerializerOptions serializerOptions,
             ILogger<KafkaMatchEventPublisher> logger)
         {
             _settings = kafkaOptions?.Value ?? throw new ArgumentNullException(nameof(kafkaOptions));
+            _serializerOptions = serializerOptions ?? throw new ArgumentNullException(nameof(serializerOptions));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
             if (string.IsNullOrWhiteSpace(_settings.BootstrapServers))
@@ -58,8 +61,8 @@ namespace Events.Api.Publishing
                 return;
             }
 
-            // For now we just serialize the entire DTO as JSON and send it as the message value.
-            var payload = JsonSerializer.Serialize(request);
+            // Serialize using the same JSON settings as the HTTP API so everything stays consistent.
+            var payload = JsonSerializer.Serialize(request, _serializerOptions);
 
             var message = new Message<string, string>
             {
@@ -85,14 +88,20 @@ namespace Events.Api.Publishing
             }
             catch (ProduceException<string, string> ex)
             {
-                // For the MVP we just log and rethrow so the caller knows something went wrong.
+                // We still log the underlying Kafka problem.
                 _logger.LogError(
                     ex,
                     "Failed to publish match event to Kafka topic {Topic} for match {MatchId}.",
                     _settings.MatchEventsTopic,
                     request.MatchId);
 
-                throw;
+                // Wrap it in a domain-specific exception so the API layer
+                // can turn it into a clean ProblemDetails response.
+                throw new MatchEventPublishException(
+                    request.MatchId,
+                    _settings.MatchEventsTopic,
+                    "Failed to publish match event to Kafka.",
+                    ex);
             }
         }
 
