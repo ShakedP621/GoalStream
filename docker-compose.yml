@@ -70,11 +70,14 @@
     environment:
       - ASPNETCORE_URLS=http://0.0.0.0:8080
       - ASPNETCORE_ENVIRONMENT=Development
+      # Match Postgres credentials: user=goalstream, pwd=goalstreampwd, db=goalstream
+      - ConnectionStrings__HighlightsDatabase=Host=postgres;Port=5432;Database=goalstream;Username=goalstream;Password=goalstreampwd
     ports:
       - "5002:8080"
     depends_on:
       - kafka
       - postgres
+
 
 volumes:
   postgres_data:
