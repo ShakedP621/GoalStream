@@ -1,6 +1,8 @@
+using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.OpenApi;
 using Events.Api.Contracts;
 using Events.Api.Publishing;
-using Microsoft.AspNetCore.OpenApi;
+using Events.Api.Config;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,10 +11,32 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// This hooks up our current stub publisher.
-// Later we’ll swap this to a real Kafka-backed implementation
-// without touching the /events endpoint.
-builder.Services.AddSingleton<IMatchEventPublisher, LoggingMatchEventPublisher>();
+// Bind the "Kafka" section from configuration into KafkaSettings so we can inject it later.
+builder.Services.Configure<KafkaSettings>(
+    builder.Configuration.GetSection(KafkaSettings.SectionName));
+
+// Register the concrete publishers so we can swap between them at runtime.
+builder.Services.AddSingleton<LoggingMatchEventPublisher>();
+builder.Services.AddSingleton<KafkaMatchEventPublisher>();
+
+// Expose a single IMatchEventPublisher, choosing implementation by config.
+// If Kafka:Enabled = true -> KafkaMatchEventPublisher
+// If Kafka:Enabled = false -> LoggingMatchEventPublisher (stub)
+builder.Services.AddSingleton<IMatchEventPublisher>(sp =>
+{
+    var kafkaOptions = sp.GetRequiredService<IOptions<KafkaSettings>>().Value;
+    var logger = sp.GetRequiredService<ILoggerFactory>()
+                   .CreateLogger("MatchEventPublisherFactory");
+
+    if (kafkaOptions.Enabled)
+    {
+        logger.LogInformation("Kafka is enabled. Using KafkaMatchEventPublisher.");
+        return sp.GetRequiredService<KafkaMatchEventPublisher>();
+    }
+
+    logger.LogWarning("Kafka is disabled. Falling back to LoggingMatchEventPublisher stub.");
+    return sp.GetRequiredService<LoggingMatchEventPublisher>();
+});
 
 var app = builder.Build();
 

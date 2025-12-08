@@ -15,11 +15,31 @@
   # Single Kafka broker using the official Apache Kafka image (KRaft mode).
   kafka:
     image: apache/kafka:4.1.1
+    hostname: kafka
     container_name: goalstream-kafka
     ports:
       - "9092:9092"
-    # No extra env needed for a simple single-broker dev setup.
-    # Other containers will reach it via kafka:9092
+    environment:
+      # Single-broker, KRaft setup adapted for local dev.
+      KAFKA_BROKER_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      # Internal listener for other containers: kafka:29092
+      # External listener for your host: localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      # Any stable random Cluster ID is fine for local dev
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
 
   # Events API – publishes match events to Kafka 
   events-api:
@@ -30,6 +50,11 @@
     environment:
       - ASPNETCORE_URLS=http://0.0.0.0:8080
       - ASPNETCORE_ENVIRONMENT=Development
+
+      # Wire in Kafka settings for KafkaSettings
+      - Kafka__Enabled=true
+      - Kafka__BootstrapServers=kafka:29092
+      - Kafka__MatchEventsTopic=match-events
     ports:
       - "5001:8080"
     depends_on:
