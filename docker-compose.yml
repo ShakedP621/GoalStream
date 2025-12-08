@@ -72,6 +72,10 @@
       - ASPNETCORE_ENVIRONMENT=Development
       # Match Postgres credentials: user=goalstream, pwd=goalstreampwd, db=goalstream
       - ConnectionStrings__HighlightsDatabase=Host=postgres;Port=5432;Database=goalstream;Username=goalstream;Password=goalstreampwd
+      # Point the Highlights.Api consumer at the Kafka container (internal DNS name)
+      - Kafka__BootstrapServers=kafka:29092
+      - Kafka__MatchEventsTopic=match-events
+      - Kafka__ConsumerGroupId=highlights-api-consumer
     ports:
       - "5002:8080"
     depends_on:

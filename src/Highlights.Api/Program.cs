@@ -1,5 +1,7 @@
-using Microsoft.EntityFrameworkCore;
+using Highlights.Api.Configuration;
+using Highlights.Api.Consumers;
 using Highlights.Api.Data;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +24,10 @@ builder.Services.AddControllers();
 // Swagger / OpenAPI support
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+// Wire up KafkaSettings so we can inject strongly-typed config into our consumer later.
+builder.Services.Configure<KafkaSettings>(builder.Configuration.GetSection("Kafka"));
+// Spin up the Kafka consumer as a background worker so it can quietly listen for match events.
+builder.Services.AddHostedService<KafkaMatchEventsConsumer>();
 
 var app = builder.Build();
 

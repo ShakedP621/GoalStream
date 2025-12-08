@@ -1,6 +1,4 @@
-﻿using System;
-
-namespace Highlights.Api.Entities;
+﻿namespace Highlights.Api.Entities;
 
 // This is the core "highlight" row that will live in Postgres.
 // We can evolve it later, but this should cover the basics.
@@ -21,6 +19,10 @@ public class Highlight
     public string Player { get; set; } = default!;    // simple player name for now
 
     public string Description { get; set; } = default!; // free-form description from the event
+
+    // Simple lifecycle status for this highlight. We'll start with "PENDING_AI"
+    // and let the enrichment worker move it to more interesting states later.
+    public string Status { get; set; } = "PENDING_AI";
 
     // Fields we expect the enrichment worker to fill or polish later.
     public string? Title { get; set; }        // e.g. "Last-minute screamer"
