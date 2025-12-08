@@ -22,7 +22,7 @@ public class Highlight
 
     // Simple lifecycle status for this highlight. We'll start with "PENDING_AI"
     // and let the enrichment worker move it to more interesting states later.
-    public string Status { get; set; } = "PENDING_AI";
+    public string Status { get; set; } = HighlightStatus.PendingAi;
 
     // Fields we expect the enrichment worker to fill or polish later.
     public string? Title { get; set; }        // e.g. "Last-minute screamer"

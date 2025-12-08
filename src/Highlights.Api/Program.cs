@@ -1,7 +1,10 @@
+using Highlights.Api.Config;
 using Highlights.Api.Configuration;
 using Highlights.Api.Consumers;
 using Highlights.Api.Data;
+using Highlights.Api.Services.Enrichment;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,6 +31,32 @@ builder.Services.AddSwaggerGen();
 builder.Services.Configure<KafkaSettings>(builder.Configuration.GetSection("Kafka"));
 // Spin up the Kafka consumer as a background worker so it can quietly listen for match events.
 builder.Services.AddHostedService<KafkaMatchEventsConsumer>();
+// Enrichment pipeline:
+// - We always register both implementations.
+// - IHighlightEnricher itself is a small factory that chooses based on AiSettings.
+builder.Services.AddScoped<StubHighlightEnricher>();
+builder.Services.AddHttpClient<RealLlmHighlightEnricher>();
+
+builder.Services.AddScoped<IHighlightEnricher>(sp =>
+{
+    var options = sp.GetRequiredService<IOptions<AiSettings>>();
+    var settings = options.Value;
+
+    if (settings.UseStubEnricher)
+    {
+        // Easy, predictable behavior for dev/test environments.
+        return sp.GetRequiredService<StubHighlightEnricher>();
+    }
+
+    // In "real" environments, we lean on the external enrichment service.
+    return sp.GetRequiredService<RealLlmHighlightEnricher>();
+});
+
+// This runs in the background and keeps chewing through PENDING_AI highlights.
+builder.Services.AddHostedService<HighlightEnrichmentWorker>();
+;
+// Bind AI-related settings from configuration.
+builder.Services.Configure<AiSettings>(builder.Configuration.GetSection("Ai"));
 
 var app = builder.Build();
 
