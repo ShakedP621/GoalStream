@@ -1,4 +1,4 @@
-using Highlights.Api.Config;
+ï»¿using Highlights.Api.Config;
 using Highlights.Api.Configuration;
 using Highlights.Api.Consumers;
 using Highlights.Api.Data;
@@ -16,7 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Tell EF how to talk to Postgres for highlights.
 builder.Services.AddDbContext<HighlightsDbContext>(options =>
 {
-    // We’ll define this connection string name in appsettings in the next step.
+    // Weâ€™ll define this connection string name in appsettings in the next step.
     var connectionString = builder.Configuration.GetConnectionString("HighlightsDatabase")
         ?? throw new InvalidOperationException(
             "Connection string 'HighlightsDatabase' not found. " +
@@ -92,9 +92,8 @@ builder.Services.Configure<AiSettings>(builder.Configuration.GetSection("Ai"));
 
 var app = builder.Build();
 
-
 // On startup, make sure the database exists and migrations are applied.
-// This keeps local/dev setups smooth – no manual "dotnet ef database update" required.
+// This keeps local/dev setups smooth â€“ no manual "dotnet ef database update" required.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<HighlightsDbContext>();
@@ -116,7 +115,7 @@ app.MapControllers();
 
 app.MapGet("/highlights/{id:guid}", async (Guid id, HighlightsDbContext db) =>
 {
-    // We only need to read here, so no tracking – keeps EF nice and lean.
+    // We only need to read here, so no tracking â€“ keeps EF nice and lean.
     var highlight = await db.Highlights
         .AsNoTracking()
         .FirstOrDefaultAsync(h => h.Id == id);
@@ -148,30 +147,16 @@ app.MapGet("/highlights", async (
     string? status,
     int? page,
     int? pageSize,
-    HighlightsDbContext db) =>
+    HighlightsDbContext db,
+    IHighlightCache highlightCache,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
 {
-    // Start with a read-only query so EF doesn't bother tracking.
-    var query = db.Highlights
-        .AsNoTracking()
-        .AsQueryable();
-
-    // If caller passes matchId, narrow results to that match.
-    if (matchId.HasValue)
-    {
-        query = query.Where(h => h.MatchId == matchId.Value);
-    }
-
-    // If caller passes a status, filter by it (e.g. PENDING_AI, READY, FAILED_AI).
-    if (!string.IsNullOrWhiteSpace(status))
-    {
-        var normalizedStatus = status.Trim();
-        query = query.Where(h => h.Status == normalizedStatus);
-    }
-
-    // Basic paging guards so callers can’t accidentally ask for a million rows.
+    // Basic paging guards so callers canâ€™t accidentally ask for a million rows.
     const int DefaultPage = 1;
     const int DefaultPageSize = 50;
     const int MaxPageSize = 100;
+    const int CacheTtlSeconds = 60; // Short-lived cache so things don't get too stale.
 
     var safePage = !page.HasValue || page < 1
         ? DefaultPage
@@ -186,19 +171,133 @@ app.MapGet("/highlights", async (
 
     var skip = (safePage - 1) * safePageSize;
 
-    // Sort newest-first so feeds feel natural.
-    var entities = await query
-        .OrderByDescending(h => h.OccurredAt)
-        .Skip(skip)
-        .Take(safePageSize)
-        .ToListAsync();
+    // Helper that wraps the original EF Core + DTO mapping logic.
+    async Task<List<HighlightDto>> LoadHighlightsFromDatabaseAsync()
+    {
+        // Start with a read-only query so EF doesn't bother tracking.
+        var query = db.Highlights
+            .AsNoTracking()
+            .AsQueryable();
 
-    // Map entities into the public DTO shape.
-    var dtos = entities
-        .Select(h => h.ToDto())
-        .ToList();
+        // If caller passes matchId, narrow results to that match.
+        if (matchId.HasValue)
+        {
+            query = query.Where(h => h.MatchId == matchId.Value);
+        }
 
-    return Results.Ok(dtos);
+        // If caller passes a status, filter by it (e.g. PENDING_AI, READY, FAILED_AI).
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            var normalizedStatus = status.Trim();
+            query = query.Where(h => h.Status == normalizedStatus);
+        }
+
+        // Sort newest-first so feeds feel natural.
+        var entities = await query
+            .OrderByDescending(h => h.OccurredAt)
+            .Skip(skip)
+            .Take(safePageSize)
+            .ToListAsync(cancellationToken);
+
+        // Map entities into the public DTO shape.
+        var dtos = entities
+            .Select(h => h.ToDto())
+            .ToList();
+
+        return dtos;
+    }
+
+    // -------------------------------------------------
+    // Decide if this request is "cache-eligible".
+    // We only cache when:
+    // - matchId is set,
+    // - status is null/empty OR explicitly READY,
+    // - and we're on the first page.
+    // -------------------------------------------------
+    var isStatusNull = string.IsNullOrWhiteSpace(status);
+    var isStatusReady = !isStatusNull &&
+                        string.Equals(status.Trim(), "READY", StringComparison.OrdinalIgnoreCase);
+    var isFirstPage = safePage == 1;
+
+    var shouldUseCache =
+        matchId.HasValue &&
+        matchId.Value != Guid.Empty &&
+        (isStatusNull || isStatusReady) &&
+        isFirstPage;
+
+    List<HighlightDto>? cachedDtos = null;
+    string? cacheKey = null;
+
+    if (shouldUseCache && matchId is Guid actualMatchId)
+    {
+        // For the cache key we distinguish:
+        // - "DEFAULT" â†’ no explicit status filter
+        // - "READY"   â†’ caller explicitly asked for READY
+        var statusTokenForKey = isStatusNull ? "DEFAULT" : "READY";
+
+        cacheKey =
+            $"highlights:match:{actualMatchId}:status:{statusTokenForKey}:page:{safePage}:size:{safePageSize}";
+
+        try
+        {
+            cachedDtos = await highlightCache
+                .GetAsync<List<HighlightDto>>(cacheKey, cancellationToken);
+
+            if (cachedDtos is not null)
+            {
+                logger.LogInformation(
+                    "Redis cache hit for highlights. MatchId={MatchId}, StatusToken={StatusToken}, Page={Page}, PageSize={PageSize}",
+                    actualMatchId, statusTokenForKey, safePage, safePageSize);
+
+                return Results.Ok(cachedDtos);
+            }
+
+            logger.LogInformation(
+                "Redis cache miss for highlights. MatchId={MatchId}, StatusToken={StatusToken}, Page={Page}, PageSize={PageSize}",
+                actualMatchId, statusTokenForKey, safePage, safePageSize);
+        }
+        catch (Exception ex)
+        {
+            // If Redis is unhappy, we just log it and fall back to Postgres.
+            logger.LogWarning(
+                ex,
+                "Redis cache read failed for key {CacheKey}. Falling back to Postgres.",
+                cacheKey);
+        }
+    }
+
+
+    // Source of truth: always Postgres.
+    var dtosFromDb = await LoadHighlightsFromDatabaseAsync();
+
+    // Best-effort cache write on the way out.
+    if (shouldUseCache && cacheKey is not null)
+    {
+        try
+        {
+            await highlightCache.SetAsync(
+                cacheKey,
+                dtosFromDb,
+                TimeSpan.FromSeconds(CacheTtlSeconds),
+                cancellationToken);
+
+            logger.LogInformation(
+                "Cached {Count} highlights for key {CacheKey} with TTL {TtlSeconds}s.",
+                dtosFromDb.Count,
+                cacheKey,
+                CacheTtlSeconds);
+        }
+        catch (Exception ex)
+        {
+            // Same story here: cache problems shouldn't break the API.
+            logger.LogWarning(
+                ex,
+                "Redis cache write failed for key {CacheKey}. Returning Postgres results anyway.",
+                cacheKey);
+        }
+    }
+
+    return Results.Ok(dtosFromDb);
 })
 .WithName("ListHighlights")
 .WithSummary("List highlights with optional filters.")
@@ -206,6 +305,7 @@ app.MapGet("/highlights", async (
     "Returns a list of highlights filtered by optional matchId and status. " +
     "Use page and pageSize for basic paging (defaults: page=1, pageSize=50, max pageSize=100).")
 .Produces<List<HighlightDto>>(StatusCodes.Status200OK);
+
 
 // Do a tiny Redis check at startup just to prove we can talk to the cache.
 // This doesn't change any HTTP behavior, it only writes to logs.
@@ -223,7 +323,7 @@ using (var scope = app.Services.CreateScope())
             var key = "health:highlights-api";
             var value = $"ok:{DateTimeOffset.UtcNow:O}";
 
-            // Using the sync API here is fine – this is a one-off startup check.
+            // Using the sync API here is fine â€“ this is a one-off startup check.
             db.StringSet(key, value, TimeSpan.FromMinutes(1));
             var roundtrip = db.StringGet(key);
 
@@ -240,7 +340,7 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        logger.LogWarning("Redis startup check skipped – IConnectionMultiplexer not available.");
+        logger.LogWarning("Redis startup check skipped â€“ IConnectionMultiplexer not available.");
     }
 }
 
