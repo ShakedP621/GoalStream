@@ -3,8 +3,11 @@ using Highlights.Api.Configuration;
 using Highlights.Api.Consumers;
 using Highlights.Api.Data;
 using Highlights.Api.Services.Enrichment;
+using Highlights.Api.Dtos;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Http;
+using System.Linq;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -82,17 +85,99 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-// Simple sanity-check endpoint: returns all highlights from the database.
-// For now we don't do filtering/paging; this is just to prove wiring is correct.
-app.MapGet("/highlights", async (HighlightsDbContext db) =>
+app.MapGet("/highlights/{id:guid}", async (Guid id, HighlightsDbContext db) =>
 {
-    // Grab everything and sort newest-first so it feels a bit nicer.
-    var highlights = await db.Highlights
+    // We only need to read here, so no tracking – keeps EF nice and lean.
+    var highlight = await db.Highlights
+        .AsNoTracking()
+        .FirstOrDefaultAsync(h => h.Id == id);
+
+    if (highlight is null)
+    {
+        // 404 with a tiny, friendly payload so callers know what went wrong.
+        return Results.NotFound(new
+        {
+            message = "Highlight not found.",
+            highlightId = id
+        });
+    }
+
+    // Map the EF entity into the public DTO shape.
+    var dto = highlight.ToDto();
+    return Results.Ok(dto);
+})
+.WithName("GetHighlightById")
+.WithSummary("Get a single highlight by its id.")
+.WithDescription("Looks up a single highlight row by its Guid id and returns a clean HighlightDto payload.")
+.Produces<HighlightDto>(StatusCodes.Status200OK)
+.Produces(StatusCodes.Status404NotFound);
+
+
+// List highlights with optional filters + simple paging.
+app.MapGet("/highlights", async (
+    Guid? matchId,
+    string? status,
+    int? page,
+    int? pageSize,
+    HighlightsDbContext db) =>
+{
+    // Start with a read-only query so EF doesn't bother tracking.
+    var query = db.Highlights
+        .AsNoTracking()
+        .AsQueryable();
+
+    // If caller passes matchId, narrow results to that match.
+    if (matchId.HasValue)
+    {
+        query = query.Where(h => h.MatchId == matchId.Value);
+    }
+
+    // If caller passes a status, filter by it (e.g. PENDING_AI, READY, FAILED_AI).
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        var normalizedStatus = status.Trim();
+        query = query.Where(h => h.Status == normalizedStatus);
+    }
+
+    // Basic paging guards so callers can’t accidentally ask for a million rows.
+    const int DefaultPage = 1;
+    const int DefaultPageSize = 50;
+    const int MaxPageSize = 100;
+
+    var safePage = !page.HasValue || page < 1
+        ? DefaultPage
+        : page.Value;
+
+    var safePageSize =
+        !pageSize.HasValue || pageSize <= 0
+            ? DefaultPageSize
+            : pageSize > MaxPageSize
+                ? MaxPageSize
+                : pageSize.Value;
+
+    var skip = (safePage - 1) * safePageSize;
+
+    // Sort newest-first so feeds feel natural.
+    var entities = await query
         .OrderByDescending(h => h.OccurredAt)
+        .Skip(skip)
+        .Take(safePageSize)
         .ToListAsync();
 
-    return Results.Ok(highlights);
-});
+    // Map entities into the public DTO shape.
+    var dtos = entities
+        .Select(h => h.ToDto())
+        .ToList();
+
+    return Results.Ok(dtos);
+})
+.WithName("ListHighlights")
+.WithSummary("List highlights with optional filters.")
+.WithDescription(
+    "Returns a list of highlights filtered by optional matchId and status. " +
+    "Use page and pageSize for basic paging (defaults: page=1, pageSize=50, max pageSize=100).")
+.Produces<List<HighlightDto>>(StatusCodes.Status200OK);
+
 
 
 app.Run();
