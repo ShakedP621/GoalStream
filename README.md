@@ -140,7 +140,7 @@ You can exercise the whole pipeline with just a few calls.
 
 ### Notes & Limitations
 
-- 
+- Limited production readiness:
   - No authentication or authorization.
   - Error handling is minimal and mostly developer-focused.
   - No metrics/monitoring, no multi-region or HA design.
