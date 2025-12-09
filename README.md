@@ -12,14 +12,14 @@ It demonstrates how an incoming match event flows:
 4. Gets enriched by a **background worker**.
 5. And is finally served via **REST endpoints**, with optional **Redis caching**.
 
-This is a **learning / portfolio proof-of-concept**, not a production system:
+This is a **learning**, not a production system:
 - No authentication/authorization.
 - Minimal error handling and observability.
 - Single-instance Kafka/Postgres/Redis, tuned for local development.
 
 ---
 
-## Architecture at a Glance
+## Architecture 
 
 - **Events.Api**
   - `POST /events`  
@@ -140,13 +140,13 @@ You can exercise the whole pipeline with just a few calls.
 
 ### Notes & Limitations
 
-- PoC only:
+- 
   - No authentication or authorization.
   - Error handling is minimal and mostly developer-focused.
   - No metrics/monitoring, no multi-region or HA design.
 - Enrichment is stubbed:
   - The “AI” is a deterministic stub implementation.
-  - A real LLM/AI endpoint can be wired in later, but is out of scope for this PoC.
+  - A real LLM/AI endpoint can be wired in later.
 - Local-only infra:
   - Kafka, Postgres, and Redis are single-instance containers.
   - Config is tuned for local development, not production.
