@@ -4,10 +4,12 @@ using Highlights.Api.Consumers;
 using Highlights.Api.Data;
 using Highlights.Api.Services.Enrichment;
 using Highlights.Api.Dtos;
+using Highlights.Api.Services.Cache;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Http;
 using System.Linq;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,6 +36,33 @@ builder.Services.AddSwaggerGen();
 builder.Services.Configure<KafkaSettings>(builder.Configuration.GetSection("Kafka"));
 // Spin up the Kafka consumer as a background worker so it can quietly listen for match events.
 builder.Services.AddHostedService<KafkaMatchEventsConsumer>();
+
+// Bind Redis settings from configuration so we can keep the connection string in appsettings.
+builder.Services.Configure<RedisSettings>(builder.Configuration.GetSection("Redis"));
+
+// Register a single ConnectionMultiplexer to be shared by the whole app.
+// StackExchange.Redis is designed to use one instance per app, not per request.
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+{
+    var redisOptions = sp.GetRequiredService<IOptions<RedisSettings>>();
+    var settings = redisOptions.Value;
+
+    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+    var logger = loggerFactory.CreateLogger("RedisStartup");
+
+    logger.LogInformation("Connecting to Redis at {ConnectionString}", settings.ConnectionString);
+
+    // This call creates the multiplexer which will handle reconnects under the hood.
+    var mux = ConnectionMultiplexer.Connect(settings.ConnectionString);
+
+    logger.LogInformation("Redis connection multiplexer created.");
+
+    return mux;
+});
+// Register a highlight-specific cache that happens to be backed by Redis.
+// Endpoints won't use this yet.
+builder.Services.AddSingleton<IHighlightCache, RedisHighlightCache>();
+
 // Enrichment pipeline:
 // - We always register both implementations.
 // - IHighlightEnricher itself is a small factory that chooses based on AiSettings.
@@ -178,6 +207,42 @@ app.MapGet("/highlights", async (
     "Use page and pageSize for basic paging (defaults: page=1, pageSize=50, max pageSize=100).")
 .Produces<List<HighlightDto>>(StatusCodes.Status200OK);
 
+// Do a tiny Redis check at startup just to prove we can talk to the cache.
+// This doesn't change any HTTP behavior, it only writes to logs.
+using (var scope = app.Services.CreateScope())
+{
+    var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+    var logger = loggerFactory.CreateLogger("RedisStartup");
+    var redis = scope.ServiceProvider.GetService<IConnectionMultiplexer>();
+
+    if (redis is not null)
+    {
+        try
+        {
+            var db = redis.GetDatabase();
+            var key = "health:highlights-api";
+            var value = $"ok:{DateTimeOffset.UtcNow:O}";
+
+            // Using the sync API here is fine – this is a one-off startup check.
+            db.StringSet(key, value, TimeSpan.FromMinutes(1));
+            var roundtrip = db.StringGet(key);
+
+            logger.LogInformation(
+                "Redis startup check succeeded. Stored {Key} = {Value}",
+                key,
+                roundtrip.ToString()
+            );
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Redis startup check failed.");
+        }
+    }
+    else
+    {
+        logger.LogWarning("Redis startup check skipped – IConnectionMultiplexer not available.");
+    }
+}
 
 
 app.Run();

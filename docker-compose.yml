@@ -39,8 +39,17 @@
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
       # Any stable random Cluster ID is fine for local dev
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" 
+  #Redis for caching in highlights-api    
+  redis:
+    image: redis:7-alpine
+    container_name: goalstream-redis
+    hostname: redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
   # Events API – publishes match events to Kafka 
   events-api:
     build:
@@ -85,3 +94,4 @@
 
 volumes:
   postgres_data:
+  redis_data:
